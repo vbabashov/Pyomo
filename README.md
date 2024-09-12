@@ -1,1 +1,1 @@
-This repo illustrates the implementation of MIP programming model using the Pyomo framework.
+This repo illustrates the implementation of Mixed model using the Pyomo framework using the open-source optimiztion solvers.
