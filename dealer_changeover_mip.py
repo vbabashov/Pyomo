@@ -53,7 +53,7 @@ df_string = df_string.query('resource_is_eligible_for_string == 1').reset_index(
 # Change the type of the 'id' column from int to str
 df_changeover['store_num'] = df_changeover['store_num'].astype('str', errors='ignore')
 df_changeover['store_num'] = df_changeover['store_num'].str.pad(4, 'left', '0')
-df_changeover_X_ik = df_changeover.query('resource_is_eligible_for_store_changeover== 1').reset_index(
+df_changeover_X_ik = df_changeover.query('resource_is_eligible_for_store_changeover == 1').reset_index(
         drop=True,
     ).drop_duplicates(subset=['resource_id', 'store_num']).set_index(['resource_id', 'store_num'])
 
@@ -125,14 +125,16 @@ model.r_ik = pyo.Param(model.i_k, initialize = df_travel_distance_r_ik)
 # ***********************************************************************************************************************
 
 # Define a decision variable with the tuple/triplet indices
-model.y_ik = pyo.Var(model.StringIndexSet, within=pyo.Binary)
-y_ik = model.y_ik
+model.y_is = pyo.Var(model.StringIndexSet, within=pyo.Binary)
+y_is = model.y_is
 model.X_ik = pyo.Var(model.ChangeoverIndexSet, within=pyo.Binary)
 X_ik = model.X_ik
 model.U_ikn = pyo.Var(model.AssetCountIndexSet , within=pyo.Binary)
 U_ikn = model.U_ikn
 model.Z_kn = pyo.Var (model.ExtraResourceIndexSet, within = pyo.Integers)
 Z_kn = model.Z_kn
+model.t_ik = pyo.Var (model.i_k, within= pyo.Binary)
+# model.t_ik.pprint()
 
 # ************************************************************************************************************************
 #                                                 2. Constraints
@@ -146,7 +148,7 @@ for _, k, _ in model.U_ikn.index_set():
 model.k_set = pyo.Set(initialize=unique_k)
 
 def const_rule1(model, k):
-    return sum(model.Z_kn[k,n] for _, n in model.Z_kn.index_set() if _ == k) +  sum(model.U_ikn[i, k, n] for i, _, n in model.U_ikn.index_set() if _ == k)  <= model.D_k[k]
+    return sum(model.Z_kn[k,n] for _, n in model.Z_kn.index_set() if _ == k)  +  sum(model.U_ikn[i, k, n] for i, _, n in model.U_ikn.index_set() if _ == k)  <= model.D_k[k]
 model.C1 = pyo.Constraint(model.k_set, rule=const_rule1)
 # model.C1.pprint()
 
@@ -211,7 +213,6 @@ model.C4 = pyo.Constraint(model.kIndexSet, rule=const_rule4)
 # model.C4.pprint()
 
 # Constratint 5: Each store must get one consultant for the changeover - \sum x_{ik} == 1 for each k
-
 unique_changeover  = []
 for _, k in model.X_ik.index_set():
     unique_changeover.append(k)
@@ -220,28 +221,72 @@ model.co_set = pyo.Set(initialize=unique_changeover)
 def const_rule5(model, k):
     return sum(model.X_ik[i, k] for i , _ in model.X_ik.index_set() if _ == k) == 1
 model.C5 = pyo.Constraint(model.co_set, rule=const_rule5)
-model.C5.pprint()
+# model.C5.pprint()
 
 
+#Constraint 6: Max One Store per Consultant on Each Changeover Week If there is more than one changeover
+grouped = df_changeover_X_ik.reset_index().groupby(['changeover_week_id', 'resource_id'])['store_num'].apply(list).reset_index()
+filtered = grouped[grouped['store_num'].apply(len) > 1]
+# print(filtered)
+result_dict = {(row['resource_id'], row['changeover_week_id']): row['store_num'] for _, row in filtered.iterrows()}
+# print(result_dict)
+
+def const_rule6(model, i, n):
+    if (i, n) in result_dict:
+        return sum(model.X_ik[i, k] for k in result_dict[(i, n)]) <= 1
+    else:
+        return pyo.Constraint.Skip
+
+model.C6 = pyo.Constraint(result_dict.keys(), rule=const_rule6)
+# model.C6.pprint()
+
+#Constraint 7: Changeover-Asset Count Relationship
+def const_rule7(model, i, k):
+    return model.X_ik[i, k] <= sum(model.U_ikn[i, k, n] for _, __, n in model.U_ikn.index_set() if _ == i and __ == k)
+model.C7 = pyo.Constraint(model.X_ik.index_set(), rule=const_rule7)
+# model.C7.pprint()
 
 
+#Constraint 8: Count the number of consultants assigned to string
+unique_i = []
+unique_k = []
+unique_s = []
 
-# print (df_asset_counts_U_ikn.reset_index()['store_num'].astype('str').head())
+for i, k in model.X_ik.index_set():
+    unique_i.append(i)
+    unique_k.append(k)
+    
+for i, s in model.y_is.index_set():
+    unique_s.append(s)
 
-# index = ('Lynn M', '645', '2023_02')
+model.I = pyo.Set(initialize=unique_i)
+model.K = pyo.Set(initialize=unique_k)
+model.S = pyo.Set(initialize=unique_s)
 
-# if index in model.AssetCountIndexSet:
-#     print("IT IS THERE")
-# else:
-#     print ("IT IS NOT THERE")
-     
-# model.i= pyo.Set(initialize=df_asset_counts_U_ikn.reset_index()['resource_id'].unique())
-# model.i.pprint()
-# model.k= pyo.Set(initialize=df_asset_counts_U_ikn.reset_index()['store_num'].astype('str').unique())
-# model.k.pprint()
 
-# def const_rule3(model, i, k):
-#     return sum(model.U_ikn[i, k, n] for _, _, n in model.AssetCountIndexSet)  <= 1
-# model.C3 = pyo.Constraint(model.i, model.k, rule=const_rule3)
-# model.C3.pprint()
+def const_rule8(model, i, k, s):
+    if (i, k) in model.X_ik.index_set() and (i, s) in model.y_is.index_set():
+        return model.X_ik[i, k] <= model.y_is[i, s]
+    return pyo.Constraint.Skip
+model.C8 = pyo.Constraint(model.I, model.K, model.S, rule=const_rule8)
+# model.C8.pprint()
+
+
+#Constraint 9: Auxilary Variable to count
+def const_rule9(model, i, k):
+    return sum(model.U_ikn[i, k, n] for _, __, n in model.U_ikn.index_set() if _ == i and __ == k) <= model.t_ik[i,k]
+model.C9 = pyo.Constraint(model.i_k, rule=const_rule9)
+
+
+#objective function
+model.obj = pyo.Objective(expr = sum (model.r_ik[i, k] * model.t_ik[i,k] for (i, k) in  model.i_k), sense =  pyo.minimize)
+# model.obj = pyo.Objective(expr = pyo.Summation(y_is), sense =  pyo.minimize)
+
+# model.pprint()
+opt = SolverFactory('glpk')
+# opt = SolverFactory('cbc', executable="C:\\Users\\vusal.babashov\\MyPrograms\\solvers\\cbc.exe" )
+result = opt.solve(model)
+print(result)
+print(pyo.value (model.obj))
+
 
